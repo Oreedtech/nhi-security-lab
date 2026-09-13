@@ -39,8 +39,12 @@ jobs:
       - uses: terraform-linters/setup-tflint@v4
         with:
           tflint_version: latest
+      # Authenticated: plugin downloads hit the GitHub releases API, and the runner's
+      # shared unauthenticated quota is routinely exhausted by other jobs on the same IP.
       - run: tflint --init
         working-directory: terraform
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: tflint --format compact
         working-directory: terraform
 
