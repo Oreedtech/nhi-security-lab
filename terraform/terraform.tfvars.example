@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored.
+subscription_id = "00000000-0000-0000-0000-000000000000"
+prefix          = "nhilab"
+location        = "eastus"
+
+# Required: no identity is created without an accountable owner and a recertification date.
+identity_owner = "cloud-security"
+review_by      = "2027-03-31"
+
+tags = {
+  environment = "lab"
+  cost-center = "personal"
+}

@@ -1,0 +1,35 @@
+// Applications holding app-role (application-permission) grants they are not exercising.
+//
+// Application permissions carry no user context -- Mail.Read as an app role reads every
+// mailbox in the tenant. The risk is not the grant on day one, it is the grant still being
+// there two years after the integration was decommissioned.
+//
+// Requires: AuditLogs and ServicePrincipalSignInLogs.
+
+let lookback = 90d;
+let granted =
+    AuditLogs
+    | where TimeGenerated > ago(365d)
+    | where OperationName has "Add app role assignment to service principal"
+    | extend AppId       = tostring(TargetResources[0].id)
+    | extend AppName     = tostring(TargetResources[0].displayName)
+    | extend GrantedWhen = TimeGenerated
+    | project AppId, AppName, GrantedWhen;
+let used =
+    AADServicePrincipalSignInLogs
+    | where TimeGenerated > ago(lookback)
+    | summarize LastSignIn = max(TimeGenerated), SignIns = count() by AppId = ServicePrincipalId;
+granted
+| summarize GrantedWhen = min(GrantedWhen) by AppId, AppName
+| join kind=leftouter used on AppId
+| extend LastSignIn = coalesce(LastSignIn, datetime(null))
+| extend DaysSinceUse = iff(isnull(LastSignIn), toreal(-1), datetime_diff('day', now(), LastSignIn))
+| extend Status = case(
+    isnull(LastSignIn), "never authenticated",
+    DaysSinceUse > 90, "dormant",
+    "active")
+| where Status != "active"
+// Dormant application permissions are standing access with no owner watching it. These are
+// the first candidates for an access review, not an alert -- triage, then revoke.
+| project AppName, AppId, Status, GrantedWhen, LastSignIn, SignIns = coalesce(SignIns, 0)
+| order by Status asc, GrantedWhen asc

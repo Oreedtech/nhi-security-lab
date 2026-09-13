@@ -1,0 +1,38 @@
+// OAuth consent-grant abuse: an application granted delegated permissions that let it read
+// mail or files on behalf of users, outside the change window.
+//
+// This is the illicit-consent-grant pattern. The attacker never steals a password -- they
+// get a user (or an over-permissioned admin) to consent to an app they control, and the
+// resulting refresh token survives password resets and most MFA challenges.
+//
+// Requires: AuditLogs (Microsoft Entra ID diagnostic settings -> Log Analytics).
+
+let sensitive_scopes = dynamic([
+    "Mail.Read", "Mail.ReadWrite", "Mail.Send",
+    "Files.Read.All", "Files.ReadWrite.All",
+    "Directory.Read.All", "Directory.ReadWrite.All",
+    "User.Read.All", "Application.ReadWrite.All"
+]);
+AuditLogs
+| where OperationName has_any ("Consent to application", "Add delegated permission grant")
+| extend props = parse_json(tostring(TargetResources[0].modifiedProperties))
+| mv-expand props
+| extend PropName  = tostring(props.displayName)
+| extend NewValue  = tostring(props.newValue)
+| where PropName in ("ConsentAction.Permissions", "DelegatedPermissionGrant.Scope")
+| extend GrantedScopes = extract_all(@"([A-Za-z]+\.[A-Za-z\.]+)", NewValue)
+| mv-expand GrantedScope = GrantedScopes to typeof(string)
+| where GrantedScope in (sensitive_scopes)
+| extend AppDisplayName = tostring(TargetResources[0].displayName)
+| extend Actor          = tostring(InitiatedBy.user.userPrincipalName)
+| extend IsAdminConsent = NewValue has "AllPrincipals"
+| project TimeGenerated, AppDisplayName, GrantedScope, IsAdminConsent, Actor, CorrelationId
+| summarize
+    Scopes        = make_set(GrantedScope),
+    AdminConsent  = max(IsAdminConsent),
+    FirstSeen     = min(TimeGenerated)
+    by AppDisplayName, Actor, CorrelationId
+// Tenant-wide consent to a mail or directory scope is the high-signal case: one grant,
+// every user's data. Narrow this to your own approved-app list before alerting.
+| where AdminConsent == true or array_length(Scopes) >= 2
+| order by FirstSeen desc

@@ -1,0 +1,26 @@
+// Privilege drift on workload identities: a managed identity or service principal receiving
+// a role assignment at subscription scope, or a role this lab's policy set forbids.
+//
+// CKV_NHI_1 and CKV_NHI_2 prevent this in code. This query catches the same change made
+// through the portal, a script, or another pipeline -- the paths policy-as-code cannot see.
+//
+// Requires: AzureActivity.
+
+let forbidden_roles = dynamic(["Owner", "Contributor", "User Access Administrator"]);
+AzureActivity
+| where OperationNameValue =~ "MICROSOFT.AUTHORIZATION/ROLEASSIGNMENTS/WRITE"
+| where ActivityStatusValue == "Success"
+| extend req   = parse_json(tostring(parse_json(tostring(Properties)).requestbody))
+| extend props = req.Properties
+| extend PrincipalId   = tostring(props.PrincipalId)
+| extend PrincipalType = tostring(props.PrincipalType)
+| extend RoleName      = tostring(props.RoleDefinitionName)
+| extend Scope         = tostring(props.Scope)
+| where PrincipalType =~ "ServicePrincipal"
+| extend ScopeDepth = array_length(split(trim("/", Scope), "/"))
+// Depth 2 is /subscriptions/<id> -- anything shallower than a resource group is standing
+// access across the whole subscription.
+| extend SubscriptionScoped = ScopeDepth <= 2
+| where SubscriptionScoped or RoleName in (forbidden_roles)
+| project TimeGenerated, Caller, RoleName, PrincipalId, Scope, SubscriptionScoped, CallerIpAddress
+| order by TimeGenerated desc
